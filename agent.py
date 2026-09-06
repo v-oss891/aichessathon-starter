@@ -158,9 +158,16 @@ class SearchTimeout(Exception):
     pass
 
 
+MAX_TT_ENTRIES = 2_000_000
+
+
 class Engine:
     def __init__(self) -> None:
+        # Kept for the whole game: the platform starts one process per game, so a
+        # position searched on an earlier move is still valid to reuse on this one.
         self.tt: dict[int, tuple[int, int, int, chess.Move | None]] = {}
+        self.killers: dict[int, list[chess.Move]] = {}
+        self.history: dict[tuple[bool, int, int], int] = {}
         self.deadline = 0.0
         self.nodes = 0
 
@@ -170,18 +177,37 @@ class Engine:
             raise SearchTimeout
 
     def order_moves(
-        self, board: chess.Board, moves: list[chess.Move], tt_move: chess.Move | None
+        self,
+        board: chess.Board,
+        moves: list[chess.Move],
+        tt_move: chess.Move | None,
+        depth: int = 0,
     ) -> list[chess.Move]:
+        killers = self.killers.get(depth, ())
+
         def key(move: chess.Move) -> tuple[int, int]:
             if tt_move is not None and move == tt_move:
-                return (3, 0)
+                return (4, 0)
             if board.is_capture(move):
-                return (2, _mvv_lva_key(board, move))
+                return (3, _mvv_lva_key(board, move))
             if move.promotion:
-                return (1, move.promotion)
-            return (0, 0)
+                return (2, move.promotion)
+            if move in killers:
+                return (1, 0)
+            return (0, self.history.get((board.turn, move.from_square, move.to_square), 0))
 
         return sorted(moves, key=key, reverse=True)
+
+    def _record_killer(self, depth: int, move: chess.Move) -> None:
+        slot = self.killers.setdefault(depth, [])
+        if move in slot:
+            return
+        slot.insert(0, move)
+        del slot[2:]
+
+    def _record_history(self, board: chess.Board, move: chess.Move, depth: int) -> None:
+        key = (board.turn, move.from_square, move.to_square)
+        self.history[key] = self.history.get(key, 0) + depth * depth
 
     def quiescence(self, board: chess.Board, alpha: int, beta: int) -> int:
         self._check_time()
@@ -236,7 +262,7 @@ class Engine:
         if depth <= 0:
             return self.quiescence(board, alpha, beta)
 
-        moves = self.order_moves(board, moves, tt_move)
+        moves = self.order_moves(board, moves, tt_move, depth)
 
         best_score = -INF
         best_move = None
@@ -251,6 +277,9 @@ class Engine:
             if best_score > alpha:
                 alpha = best_score
             if alpha >= beta:
+                if not board.is_capture(move) and not move.promotion:
+                    self._record_killer(depth, move)
+                    self._record_history(board, move, depth)
                 break
 
         flag = 0
@@ -258,13 +287,14 @@ class Engine:
             flag = 2
         elif best_score >= beta:
             flag = 1
+        if len(self.tt) > MAX_TT_ENTRIES:
+            self.tt.clear()
         self.tt[key] = (depth, best_score, flag, best_move)
 
         return best_score
 
     def search(self, board: chess.Board, time_budget: float) -> chess.Move:
         self.deadline = time.monotonic() + time_budget
-        self.tt.clear()
         legal = list(board.legal_moves)
         if len(legal) == 1:
             return legal[0]
