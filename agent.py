@@ -168,6 +168,13 @@ class Engine:
         self.tt: dict[int, tuple[int, int, int, chess.Move | None]] = {}
         self.killers: dict[int, list[chess.Move]] = {}
         self.history: dict[tuple[bool, int, int], int] = {}
+        # Real occurrences of each position across the actual game so far, recorded
+        # once per get_move call. A fresh board() from the fen has no move history of
+        # its own, so without this the search cannot see a repetition coming from
+        # earlier moves and can walk straight into a threefold draw it never meant to
+        # take, or fail to force one when behind.
+        self.history_counts: dict[int, int] = {}
+        self.path_counts: dict[int, int] = {}
         self.deadline = 0.0
         self.nodes = 0
 
@@ -234,10 +241,19 @@ class Engine:
     ) -> int:
         self._check_time()
 
-        if board.is_repetition(2) or board.halfmove_clock >= 100:
+        if board.halfmove_clock >= 100:
             return 0
 
         key = chess.polyglot.zobrist_hash(board)
+
+        # Would landing here be this position's real third occurrence in the game
+        # (counting moves already played plus this hypothetical continuation)? If so
+        # the referee draws it regardless of what the static eval thinks, so score it
+        # as the forced draw it is rather than searching past it.
+        path_seen = self.path_counts.get(key, 0)
+        if self.history_counts.get(key, 0) + path_seen + 1 >= 3:
+            return 0
+
         tt_move = None
         entry = self.tt.get(key)
         if entry is not None:
@@ -264,23 +280,30 @@ class Engine:
 
         moves = self.order_moves(board, moves, tt_move, depth)
 
-        best_score = -INF
-        best_move = None
-        orig_alpha = alpha
-        for move in moves:
-            board.push(move)
-            score = -self.negamax(board, depth - 1, -beta, -alpha)
-            board.pop()
-            if score > best_score:
-                best_score = score
-                best_move = move
-            if best_score > alpha:
-                alpha = best_score
-            if alpha >= beta:
-                if not board.is_capture(move) and not move.promotion:
-                    self._record_killer(depth, move)
-                    self._record_history(board, move, depth)
-                break
+        self.path_counts[key] = path_seen + 1
+        try:
+            best_score = -INF
+            best_move = None
+            orig_alpha = alpha
+            for move in moves:
+                board.push(move)
+                score = -self.negamax(board, depth - 1, -beta, -alpha)
+                board.pop()
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+                if best_score > alpha:
+                    alpha = best_score
+                if alpha >= beta:
+                    if not board.is_capture(move) and not move.promotion:
+                        self._record_killer(depth, move)
+                        self._record_history(board, move, depth)
+                    break
+        finally:
+            if path_seen:
+                self.path_counts[key] = path_seen
+            else:
+                del self.path_counts[key]
 
         flag = 0
         if best_score <= orig_alpha:
@@ -295,6 +318,7 @@ class Engine:
 
     def search(self, board: chess.Board, time_budget: float) -> chess.Move:
         self.deadline = time.monotonic() + time_budget
+        self.path_counts.clear()  # defensive: should already be empty after each call
         legal = list(board.legal_moves)
         if len(legal) == 1:
             return legal[0]
@@ -340,6 +364,12 @@ def get_move(fen: str, time_left_ms: int) -> str:
     returns       "e2e4", or "e7e8q" for a promotion
     """
     board = chess.Board(fen)
+
+    # Record that this exact position has now really occurred once more in the
+    # game, so the search below can see a real threefold coming even though this
+    # freshly-built board has no move history of its own to check against.
+    key = chess.polyglot.zobrist_hash(board)
+    _engine.history_counts[key] = _engine.history_counts.get(key, 0) + 1
 
     legal = list(board.legal_moves)
     if not legal:
