@@ -159,6 +159,7 @@ class SearchTimeout(Exception):
 
 
 MAX_TT_ENTRIES = 2_000_000
+MAX_CHECK_EXTENSIONS = 12
 
 
 class Engine:
@@ -237,7 +238,7 @@ class Engine:
         return alpha
 
     def negamax(
-        self, board: chess.Board, depth: int, alpha: int, beta: int
+        self, board: chess.Board, depth: int, alpha: int, beta: int, extensions: int = 0
     ) -> int:
         self._check_time()
 
@@ -287,7 +288,17 @@ class Engine:
             orig_alpha = alpha
             for move in moves:
                 board.push(move)
-                score = -self.negamax(board, depth - 1, -beta, -alpha)
+                # A forcing check gets searched a ply deeper instead of shorter, since
+                # a series of checks needs to be followed to its end (mate, a won
+                # material grab, or genuinely nothing) rather than cut off mid-sequence
+                # by the normal depth budget — that's exactly the pattern that walked
+                # us into a losing repetition instead of a study win a plain search
+                # was too shallow to see past.
+                if board.is_check() and extensions < MAX_CHECK_EXTENSIONS:
+                    child_depth, child_extensions = depth, extensions + 1
+                else:
+                    child_depth, child_extensions = depth - 1, extensions
+                score = -self.negamax(board, child_depth, -beta, -alpha, child_extensions)
                 board.pop()
                 if score > best_score:
                     best_score = score
@@ -333,7 +344,9 @@ class Engine:
                 ordered = self.order_moves(board, legal, best_move)
                 for move in ordered:
                     board.push(move)
-                    score = -self.negamax(board, depth - 1, -beta, -alpha)
+                    child_depth = depth if board.is_check() else depth - 1
+                    child_extensions = 1 if board.is_check() else 0
+                    score = -self.negamax(board, child_depth, -beta, -alpha, child_extensions)
                     board.pop()
                     if score > current_best_score:
                         current_best_score = score
