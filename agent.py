@@ -106,6 +106,27 @@ def _mirror(square: int) -> int:
     return square ^ 56
 
 
+def _chebyshev(a: int, b: int) -> int:
+    return max(
+        abs(chess.square_file(a) - chess.square_file(b)),
+        abs(chess.square_rank(a) - chess.square_rank(b)),
+    )
+
+
+def _center_distance(square: int) -> int:
+    """Chebyshev distance from the nearest of the four center squares (0..3)."""
+    file_dist = min(abs(chess.square_file(square) - 3), abs(chess.square_file(square) - 4))
+    rank_dist = min(abs(chess.square_rank(square) - 3), abs(chess.square_rank(square) - 4))
+    return max(file_dist, rank_dist)
+
+
+MOPUP_MATERIAL_THRESHOLD = 500
+MOPUP_LOSER_MAX_MATERIAL = 500
+MOPUP_MIN_PHASE = 0.80
+MOPUP_EDGE_WEIGHT = 10
+MOPUP_KING_WEIGHT = 4
+
+
 def game_phase(board: chess.Board) -> float:
     """0.0 = opening/middlegame, 1.0 = endgame, based on remaining non-pawn material."""
     total = (
@@ -131,8 +152,15 @@ def evaluate(board: chess.Board) -> int:
 
     phase = game_phase(board)
     score = 0.0
+    white_material = 0
+    black_material = 0
     for square, piece in board.piece_map().items():
         value = PIECE_VALUE[piece.piece_type]
+        if piece.piece_type != chess.KING:
+            if piece.color == chess.WHITE:
+                white_material += value
+            else:
+                black_material += value
         idx = square if piece.color == chess.WHITE else _mirror(square)
         if piece.piece_type == chess.KING:
             pst_value = KING_MID_PST[idx] * (1 - phase) + KING_END_PST[idx] * phase
@@ -140,6 +168,28 @@ def evaluate(board: chess.Board) -> int:
             pst_value = PST[piece.piece_type][idx]
         total = value + pst_value
         score += total if piece.color == chess.WHITE else -total
+
+    # Mop-up: material + PST alone can't tell a shuffle apart from real progress
+    # once one side has an overwhelming, decided advantage — every legal move
+    # scores the same, so the search has no reason to actually finish the game
+    # and can drift into repeating itself right past the win. When one side is
+    # up more than a rook, add a small, separate incentive to drive the losing
+    # king to the edge and bring the winning king in, which is enough to break
+    # the tie between "shuffle" and "make progress" without disturbing normal
+    # play anywhere the game is still genuinely contested.
+    material_diff = white_material - black_material
+    loser_material = min(white_material, black_material)
+    decisive = abs(material_diff) >= MOPUP_MATERIAL_THRESHOLD
+    truly_simplified = phase >= MOPUP_MIN_PHASE
+    if truly_simplified and loser_material <= MOPUP_LOSER_MAX_MATERIAL and decisive:
+        winner = chess.WHITE if material_diff > 0 else chess.BLACK
+        winner_king = board.king(winner)
+        loser_king = board.king(not winner)
+        if winner_king is not None and loser_king is not None:
+            mopup = MOPUP_EDGE_WEIGHT * _center_distance(loser_king) + MOPUP_KING_WEIGHT * (
+                7 - _chebyshev(winner_king, loser_king)
+            )
+            score += mopup if winner == chess.WHITE else -mopup
 
     result = round(score) if board.turn == chess.WHITE else -round(score)
     return result
