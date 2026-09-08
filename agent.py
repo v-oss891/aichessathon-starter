@@ -160,6 +160,8 @@ class SearchTimeout(Exception):
 
 MAX_TT_ENTRIES = 2_000_000
 MAX_CHECK_EXTENSIONS = 12
+NULL_MOVE_MIN_DEPTH = 3
+NULL_MOVE_REDUCTION = 2
 
 
 class Engine:
@@ -278,6 +280,31 @@ class Engine:
 
         if depth <= 0:
             return self.quiescence(board, alpha, beta)
+
+        # Null-move pruning: let the side to move pass and search the rest at a
+        # reduced depth. If the position is still at least as good for them as beta
+        # even after giving the opponent a free move, a real move only does better,
+        # so this branch can't be part of the principal line — prune it. Skipped in
+        # check (a null move there is illegal), near mate scores (the reduced search
+        # isn't reliable that close to forced lines), and in king-and-pawn endings
+        # (a free move can be the only thing preventing zugzwang there, so the
+        # assumption a free move can only help the giver breaks down).
+        if (
+            depth >= NULL_MOVE_MIN_DEPTH
+            and not board.is_check()
+            and abs(beta) < MATE - 100
+            and any(
+                board.pieces(pt, board.turn)
+                for pt in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN)
+            )
+        ):
+            board.push(chess.Move.null())
+            null_score = -self.negamax(
+                board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, extensions
+            )
+            board.pop()
+            if null_score >= beta:
+                return beta
 
         moves = self.order_moves(board, moves, tt_move, depth)
 
