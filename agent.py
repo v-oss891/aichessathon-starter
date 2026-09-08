@@ -281,8 +281,10 @@ class Engine:
         moves = self.order_moves(board, moves, None)
         for move in moves:
             board.push(move)
-            score = -self.quiescence(board, -beta, -alpha)
-            board.pop()
+            try:
+                score = -self.quiescence(board, -beta, -alpha)
+            finally:
+                board.pop()
             if score >= beta:
                 return beta
             if score > alpha:
@@ -349,10 +351,12 @@ class Engine:
             )
         ):
             board.push(chess.Move.null())
-            null_score = -self.negamax(
-                board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, extensions
-            )
-            board.pop()
+            try:
+                null_score = -self.negamax(
+                    board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, extensions
+                )
+            finally:
+                board.pop()
             if null_score >= beta:
                 return beta
 
@@ -375,8 +379,10 @@ class Engine:
                     child_depth, child_extensions = depth, extensions + 1
                 else:
                     child_depth, child_extensions = depth - 1, extensions
-                score = -self.negamax(board, child_depth, -beta, -alpha, child_extensions)
-                board.pop()
+                try:
+                    score = -self.negamax(board, child_depth, -beta, -alpha, child_extensions)
+                finally:
+                    board.pop()
                 if score > best_score:
                     best_score = score
                     best_move = move
@@ -423,8 +429,10 @@ class Engine:
                     board.push(move)
                     child_depth = depth if board.is_check() else depth - 1
                     child_extensions = 1 if board.is_check() else 0
-                    score = -self.negamax(board, child_depth, -beta, -alpha, child_extensions)
-                    board.pop()
+                    try:
+                        score = -self.negamax(board, child_depth, -beta, -alpha, child_extensions)
+                    finally:
+                        board.pop()
                     if score > current_best_score:
                         current_best_score = score
                         current_best = move
