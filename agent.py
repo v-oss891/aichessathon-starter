@@ -126,6 +126,14 @@ MOPUP_MIN_PHASE = 0.80
 MOPUP_EDGE_WEIGHT = 10
 MOPUP_KING_WEIGHT = 4
 
+# Small, standard positional bonuses/penalties on top of material+PST. Each is
+# well-established in chess literature and small enough to nudge close decisions
+# without overriding the core evaluation.
+BISHOP_PAIR_BONUS = 40
+ROOK_ON_OPEN_FILE_BONUS = 20
+ROOK_ON_SEMI_OPEN_FILE_BONUS = 10
+DOUBLED_PAWN_PENALTY = 15
+
 
 def game_phase(board: chess.Board) -> float:
     """0.0 = opening/middlegame, 1.0 = endgame, based on remaining non-pawn material."""
@@ -190,6 +198,43 @@ def evaluate(board: chess.Board) -> int:
                 7 - _chebyshev(winner_king, loser_king)
             )
             score += mopup if winner == chess.WHITE else -mopup
+
+    # Bishop pair: two bishops covering both color complexes are worth more than
+    # the sum of their piece values -- standard ~+30-50cp bonus in every serious
+    # chess engine.
+    if len(board.pieces(chess.BISHOP, chess.WHITE)) >= 2:
+        score += BISHOP_PAIR_BONUS
+    if len(board.pieces(chess.BISHOP, chess.BLACK)) >= 2:
+        score -= BISHOP_PAIR_BONUS
+
+    # Doubled pawns and rook activity by file. One pass through the eight files
+    # covers both: count pawns per file per side (>=2 = penalty), then note which
+    # files have zero pawns (open) or only enemy pawns (semi-open from our side)
+    # to score rooks sitting on them.
+    white_pawns = board.pieces(chess.PAWN, chess.WHITE)
+    black_pawns = board.pieces(chess.PAWN, chess.BLACK)
+    white_rooks = board.pieces(chess.ROOK, chess.WHITE)
+    black_rooks = board.pieces(chess.ROOK, chess.BLACK)
+    for file_index in range(8):
+        file_mask = chess.BB_FILES[file_index]
+        white_file_pawns = bin(int(white_pawns) & file_mask).count("1")
+        black_file_pawns = bin(int(black_pawns) & file_mask).count("1")
+        if white_file_pawns >= 2:
+            score -= DOUBLED_PAWN_PENALTY * (white_file_pawns - 1)
+        if black_file_pawns >= 2:
+            score += DOUBLED_PAWN_PENALTY * (black_file_pawns - 1)
+        white_rooks_on_file = bin(int(white_rooks) & file_mask).count("1")
+        black_rooks_on_file = bin(int(black_rooks) & file_mask).count("1")
+        if white_rooks_on_file:
+            if white_file_pawns == 0 and black_file_pawns == 0:
+                score += ROOK_ON_OPEN_FILE_BONUS * white_rooks_on_file
+            elif white_file_pawns == 0:
+                score += ROOK_ON_SEMI_OPEN_FILE_BONUS * white_rooks_on_file
+        if black_rooks_on_file:
+            if white_file_pawns == 0 and black_file_pawns == 0:
+                score -= ROOK_ON_OPEN_FILE_BONUS * black_rooks_on_file
+            elif black_file_pawns == 0:
+                score -= ROOK_ON_SEMI_OPEN_FILE_BONUS * black_rooks_on_file
 
     result = round(score) if board.turn == chess.WHITE else -round(score)
     return result
