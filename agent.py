@@ -134,6 +134,44 @@ ROOK_ON_OPEN_FILE_BONUS = 20
 ROOK_ON_SEMI_OPEN_FILE_BONUS = 10
 DOUBLED_PAWN_PENALTY = 15
 
+# Passed pawn bonus, indexed by how far the pawn has advanced from its own back
+# rank (so index 6 is one square from promoting). Deliberately steep at the top:
+# material + the pawn PST together value a pawn on the seventh at ~150cp, but a
+# passer one move from queening is worth most of a queen, and the search cannot
+# be relied on to discover that -- the tactical justification is often ten plies
+# out, well past the horizon in a middlegame. Without this the engine happily
+# trades into positions with enemy pawns sitting on the second rank.
+PASSED_PAWN_BONUS = (0, 5, 15, 30, 60, 110, 200, 0)
+
+
+def _build_passed_pawn_masks() -> tuple[list[int], list[int]]:
+    """For each square, the squares an enemy pawn must occupy to stop a passer.
+
+    A pawn is passed when no enemy pawn stands on its own file or either
+    adjacent file anywhere ahead of it. Precomputed once at import, off the
+    clock, so the check at eval time is a single bitboard AND.
+    """
+    white_masks = [0] * 64
+    black_masks = [0] * 64
+    for square in range(64):
+        file_index = chess.square_file(square)
+        rank_index = chess.square_rank(square)
+        white_mask = 0
+        black_mask = 0
+        for neighbour in (file_index - 1, file_index, file_index + 1):
+            if not 0 <= neighbour <= 7:
+                continue
+            for ahead in range(rank_index + 1, 8):
+                white_mask |= chess.BB_SQUARES[chess.square(neighbour, ahead)]
+            for behind in range(0, rank_index):
+                black_mask |= chess.BB_SQUARES[chess.square(neighbour, behind)]
+        white_masks[square] = white_mask
+        black_masks[square] = black_mask
+    return white_masks, black_masks
+
+
+PASSED_MASK_WHITE, PASSED_MASK_BLACK = _build_passed_pawn_masks()
+
 
 def game_phase(board: chess.Board) -> float:
     """0.0 = opening/middlegame, 1.0 = endgame, based on remaining non-pawn material."""
@@ -235,6 +273,19 @@ def evaluate(board: chess.Board) -> int:
                 score -= ROOK_ON_OPEN_FILE_BONUS * black_rooks_on_file
             elif black_file_pawns == 0:
                 score -= ROOK_ON_SEMI_OPEN_FILE_BONUS * black_rooks_on_file
+
+    # Passed pawns. Material and PST alone price a pawn on the seventh at about
+    # 150cp, when an unopposed one is worth most of a queen -- the engine will
+    # otherwise trade into a lost ending because the refutation sits past its
+    # horizon.
+    black_pawn_bb = int(black_pawns)
+    white_pawn_bb = int(white_pawns)
+    for square in white_pawns:
+        if not black_pawn_bb & PASSED_MASK_WHITE[square]:
+            score += PASSED_PAWN_BONUS[chess.square_rank(square)]
+    for square in black_pawns:
+        if not white_pawn_bb & PASSED_MASK_BLACK[square]:
+            score -= PASSED_PAWN_BONUS[7 - chess.square_rank(square)]
 
     result = round(score) if board.turn == chess.WHITE else -round(score)
     return result
