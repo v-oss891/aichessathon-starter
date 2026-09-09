@@ -209,7 +209,15 @@ class SearchTimeout(Exception):
 
 
 MAX_TT_ENTRIES = 2_000_000
-MAX_CHECK_EXTENSIONS = 12
+# Kept low deliberately: a higher cap lets a check-heavy line accumulate far more
+# real search depth than a quiet sibling move at the same nominal depth, which
+# inflates its score simply from being explored more thoroughly rather than
+# because it's actually better -- confirmed directly by comparing a checking
+# move against a quiet alternative at increasing depth: at cap 12 the checking
+# move's score kept climbing away from the quiet move's (494 vs 479), and at
+# cap 4 they converged to nearly equal (480 vs 479), which is what two genuinely
+# comparable moves should look like.
+MAX_CHECK_EXTENSIONS = 4
 NULL_MOVE_MIN_DEPTH = 3
 NULL_MOVE_REDUCTION = 2
 
