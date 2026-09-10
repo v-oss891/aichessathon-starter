@@ -317,6 +317,16 @@ MAX_CHECK_EXTENSIONS = 4
 NULL_MOVE_MIN_DEPTH = 3
 NULL_MOVE_REDUCTION = 2
 
+# Time management. The platform's control is fixed at 120 s + 0.5 s per move.
+# Rated games start from curated positions around move 6-10 and our games have
+# been ending around move 50-60, so 52 is a fair estimate of the finishing move
+# number; the floor keeps the divisor sane once a game runs past it.
+INCREMENT_S = 0.5
+INCREMENT_USE_FRACTION = 0.8  # spend most of the increment, bank a little
+GAME_LENGTH_ESTIMATE = 52
+MIN_MOVES_LEFT = 14
+TIME_RESERVE_S = 2.0
+
 
 class Engine:
     def __init__(self) -> None:
@@ -579,15 +589,29 @@ def get_move(fen: str, time_left_ms: int) -> str:
     if len(legal) == 1:
         return legal[0].uci()
 
-    # Budget: assume ~30 moves left in a typical game, keep a safety margin, never
-    # burn more than a third of the remaining clock on one move, and always leave
-    # room for the per-move increment plus overhead.
+    # Budget the clock against how much game is actually left, not a constant.
+    #
+    # Dividing the remaining time by a fixed 40 every move -- which is what this
+    # used to do -- means the budget decays geometrically as the clock drains,
+    # and the reserve it keeps banking never gets spent. Measured over twelve
+    # rated games it finished every single one with 34-82 s still on the clock,
+    # throwing away roughly 40% of the thinking time available, which is search
+    # depth given away for nothing.
+    #
+    # Two corrections. Estimate the moves genuinely remaining from the move
+    # number the fen carries (a fresh board has no move stack to count, but
+    # fullmove_number survives the fen round-trip), so late-game moves divide a
+    # small clock by a small number instead of by 40. And plan on the 0.5 s the
+    # increment adds back each move, which over a full game is another ~25 s
+    # that was never being budgeted at all.
     time_left_s = max(time_left_ms, 0) / 1000.0
-    expected_moves_left = 40
-    budget = time_left_s / expected_moves_left
-    budget = min(budget, time_left_s / 3.0)
-    budget = max(budget, 0.05)
-    budget -= 0.05  # safety margin for overhead outside the search loop
+    moves_left = max(MIN_MOVES_LEFT, GAME_LENGTH_ESTIMATE - board.fullmove_number)
+    spendable = max(time_left_s - TIME_RESERVE_S, 0.0)
+    budget = spendable / moves_left + INCREMENT_S * INCREMENT_USE_FRACTION
+    # Hard ceiling so no single move can eat the clock. This is also what keeps
+    # things safe once the clock is genuinely low: at 3 s left it allows 0.25 s
+    # against a 0.5 s increment, so the clock recovers rather than draining.
+    budget = min(budget, spendable / 4.0)
     budget = max(budget, 0.02)
 
     move = _engine.search(board, budget)
