@@ -120,6 +120,11 @@ def _center_distance(square: int) -> int:
     return max(file_dist, rank_dist)
 
 
+def _adjacent_files(file_index: int) -> set[int]:
+    """A file and its immediate neighbours, clamped to the board's edges."""
+    return set(range(max(0, file_index - 1), min(7, file_index + 1) + 1))
+
+
 MOPUP_MATERIAL_THRESHOLD = 500
 MOPUP_LOSER_MAX_MATERIAL = 500
 MOPUP_MIN_PHASE = 0.80
@@ -133,6 +138,15 @@ BISHOP_PAIR_BONUS = 40
 ROOK_ON_OPEN_FILE_BONUS = 20
 ROOK_ON_SEMI_OPEN_FILE_BONUS = 10
 DOUBLED_PAWN_PENALTY = 15
+
+# King safety: an open file next to your own king is a highway for the
+# opponent's rooks and queen. Only matters while the opponent still has one of
+# those to use it with, and only while the game is not so simplified that king
+# activity is an asset rather than a liability -- reuses the same MOPUP_MIN_PHASE
+# cutoff idea but a little earlier, since a king that is fine to walk forward at
+# phase 0.75 is not yet fine to walk forward at 0.5.
+KING_OPEN_FILE_PENALTY = 25
+KING_SAFETY_MAX_PHASE = 0.75
 
 # Passed pawn bonus, indexed by how far the pawn has advanced from its own back
 # rank (so index 6 is one square from promoting). Deliberately steep at the top:
@@ -253,6 +267,29 @@ def evaluate(board: chess.Board) -> int:
     black_pawns = board.pieces(chess.PAWN, chess.BLACK)
     white_rooks = board.pieces(chess.ROOK, chess.WHITE)
     black_rooks = board.pieces(chess.ROOK, chess.BLACK)
+
+    # King safety files: the king's own file and its two neighbours, for
+    # whichever side is still worth checking (opponent has a queen or rook, and
+    # the position hasn't simplified past the point king activity is an asset).
+    check_white_king = phase < KING_SAFETY_MAX_PHASE and (
+        board.pieces(chess.QUEEN, chess.BLACK) or board.pieces(chess.ROOK, chess.BLACK)
+    )
+    check_black_king = phase < KING_SAFETY_MAX_PHASE and (
+        board.pieces(chess.QUEEN, chess.WHITE) or board.pieces(chess.ROOK, chess.WHITE)
+    )
+    white_king_sq = board.king(chess.WHITE)
+    black_king_sq = board.king(chess.BLACK)
+    white_king_files = (
+        _adjacent_files(chess.square_file(white_king_sq))
+        if check_white_king and white_king_sq is not None
+        else set()
+    )
+    black_king_files = (
+        _adjacent_files(chess.square_file(black_king_sq))
+        if check_black_king and black_king_sq is not None
+        else set()
+    )
+
     for file_index in range(8):
         file_mask = chess.BB_FILES[file_index]
         white_file_pawns = bin(int(white_pawns) & file_mask).count("1")
@@ -261,6 +298,10 @@ def evaluate(board: chess.Board) -> int:
             score -= DOUBLED_PAWN_PENALTY * (white_file_pawns - 1)
         if black_file_pawns >= 2:
             score += DOUBLED_PAWN_PENALTY * (black_file_pawns - 1)
+        if file_index in white_king_files and white_file_pawns == 0:
+            score -= KING_OPEN_FILE_PENALTY
+        if file_index in black_king_files and black_file_pawns == 0:
+            score += KING_OPEN_FILE_PENALTY
         white_rooks_on_file = bin(int(white_rooks) & file_mask).count("1")
         black_rooks_on_file = bin(int(black_rooks) & file_mask).count("1")
         if white_rooks_on_file:
